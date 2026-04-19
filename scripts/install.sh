@@ -178,7 +178,14 @@ build_from_local() {
 
     if [ -f "pyproject.toml" ] || [ -f "setup.py" ]; then
         print_message info "${MUTED}Building Python binary with PyInstaller...${NC}"
-        pyinstaller strix.spec --noconfirm --distpath "$build_dir" --workpath "$build_dir/.build"
+        if command -v uv >/dev/null 2>&1; then
+            uv run pyinstaller strix.spec --noconfirm --distpath "$build_dir" --workpath "$build_dir/.build"
+        elif command -v pyinstaller >/dev/null 2>&1; then
+            pyinstaller strix.spec --noconfirm --distpath "$build_dir" --workpath "$build_dir/.build"
+        else
+            print_message error "${RED}pyinstaller not found. Install with: pip install pyinstaller${NC}"
+            exit 1
+        fi
     elif [ -f "go.mod" ]; then
         print_message info "${MUTED}Building Go binary...${NC}"
         CGO_ENABLED=0 GOOS=$os GOARCH=$arch go build -ldflags="-s -w" -o "$build_dir/strix-$target" cmd/strix/main.go
@@ -397,11 +404,11 @@ verify_installation() {
 if [ "$USE_LOCAL" = true ]; then
     build_from_local
 
-    local build_dir="$PROJECT_ROOT/dist"
+    BUILD_DIR="$PROJECT_ROOT/dist"
     if [ "$os" = "windows" ]; then
-        cp "$build_dir/strix-$target.exe" "$INSTALL_DIR/strix.exe" 2>/dev/null || cp "$build_dir/strix.exe" "$INSTALL_DIR/strix.exe"
+        cp "$BUILD_DIR/strix-$target.exe" "$INSTALL_DIR/strix.exe" 2>/dev/null || cp "$BUILD_DIR/strix.exe" "$INSTALL_DIR/strix.exe"
     else
-        cp "$build_dir/strix-$target" "$INSTALL_DIR/strix" 2>/dev/null || cp "$build_dir/strix" "$INSTALL_DIR/strix"
+        cp "$BUILD_DIR/strix-$target" "$INSTALL_DIR/strix" 2>/dev/null || cp "$BUILD_DIR/strix" "$INSTALL_DIR/strix"
         chmod 755 "$INSTALL_DIR/strix"
     fi
     print_message success "${GREEN}✓ Strix installed from local build${NC}"

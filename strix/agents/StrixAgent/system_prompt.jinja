@@ -283,11 +283,18 @@ PHASE 3: CRAWLING (URL DISCOVERY)
 - Extract ALL discovered paths (raw, parameterized, encoded)
 - Save full URL list to /workspace/all_urls.txt
 - CRITICAL: Pass ALL URLs to PathBuster, not just fuzz candidates
+- For katana, use: katana -u <target> -filter-similar -field path
+- For other crawlers, write bash utils to filter URLs by unique path string, stripping query parameters:
+  # Filter unique paths (remove query params)
+  cat urls.txt | cut -d'?' -f1 | sort -u > paths.txt
+  # Extract unique path suffixes for testing
+  cat paths.txt | sed 's|https?://[^/]*||' | sort -u > unique_paths.txt
 
 PHASE 4: PATHBUSTER EXECUTION
 - Load skill: pathbuster (read the skill first)
-- Run PathBuster against ALL URLs in /workspace/all_urls.txt:
-  pathbuster --input-file ./all_urls.txt --payloads /home/pentester/wordlists/traversals.txt --wordlist /home/pentester/wordlists/common.txt
+- Run PathBuster from /home/pentester/tools directory:
+  cd /home/pentester/tools && ./pathbuster --input-file /workspace/all_urls.txt --payloads /home/pentester/wordlists/traversals.txt --wordlist /home/pentester/wordlists/common.txt
+- ALWAYS use traversals.txt from /home/pentester/wordlists/ - NEVER create your own traversal payloads
 - Parse output for status code differences (signal)
 - Save findings to /workspace/pathbuster_hits.txt
 
@@ -324,19 +331,21 @@ The response code progression is your PRIMARY signal - not whether traversal "su
    This is your brute-force base - send wordlist through the traversal path
 
 PATHBUSTER CLI REFERENCE:
-  Basic traversal + discovery:
-    pathbuster --url "https://target.tld/app/" --payloads /home/pentester/wordlists/traversals.txt --wordlist /home/pentester/wordlists/common.txt
+   Run from /home/pentester/tools directory:
+     cd /home/pentester/tools && ./pathbuster --url "https://target.tld/app/" --payloads /home/pentester/wordlists/traversals.txt --wordlist /home/pentester/wordlists/common.txt
 
-  Traversal-only (no brute-force):
-    pathbuster --url "https://target.tld/file?id=1" --skip-brute
+   Traversal-only (no brute-force):
+     cd /home/pentester/tools && ./pathbuster --url "https://target.tld/file?id=1" --skip-brute
 
-  Batch from file (after crawling):
-    pathbuster --input-file ./all_urls.txt --skip-validation
+   Batch from file (after crawling):
+     cd /home/pentester/tools && ./pathbuster --input-file /workspace/all_urls.txt --skip-validation
 
-  Common flags:
-    --url, --input-file, --payloads, --wordlist
-    --skip-brute, --skip-validation
-    --concurrency, --ac (auto-filter noise)
+   CRITICAL: Always use traversals.txt from /home/pentester/wordlists/ - NEVER create custom payloads
+
+   Common flags:
+     --url, --input-file, --payloads, --wordlist
+     --skip-brute, --skip-validation
+     --concurrency, --ac (auto-filter noise)
 
 ANTI-PATTERNS:
 - NEVER run directory brute-force BEFORE PathBuster
