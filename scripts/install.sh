@@ -3,8 +3,9 @@
 set -euo pipefail
 
 APP=strix
-REPO="usestrix/strix"
+REPO="ethicalhackingplayground/strix"
 STRIX_IMAGE="ghcr.io/usestrix/strix-sandbox:0.1.13"
+LOCAL_IMAGE="strix-sandbox:local"
 
 MUTED='\033[0;2m'
 RED='\033[0;31m'
@@ -56,28 +57,51 @@ fi
 
 target="$os-$arch"
 
-if [ "$os" = "linux" ]; then
-    if ! command -v tar >/dev/null 2>&1; then
-         echo -e "${RED}Error: 'tar' is required but not installed.${NC}"
-         exit 1
-    fi
-fi
-
-if [ "$os" = "windows" ]; then
-    if ! command -v unzip >/dev/null 2>&1; then
-        echo -e "${RED}Error: 'unzip' is required but not installed.${NC}"
-        exit 1
-    fi
-fi
-
 INSTALL_DIR=$HOME/.strix/bin
 mkdir -p "$INSTALL_DIR"
 
-if [ -z "$requested_version" ]; then
-    specific_version=$(curl -s "https://api.github.com/repos/$REPO/releases/latest" | sed -n 's/.*"tag_name": *"v\([^"]*\)".*/\1/p')
-    if [[ $? -ne 0 || -z "$specific_version" ]]; then
-        echo -e "${RED}Failed to fetch version information${NC}"
-        exit 1
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
+
+usage() {
+    cat <<EOF
+🦅 Strix Installation Script
+
+Usage: $(basename "$0") [OPTIONS]
+
+Options:
+    -h, --help              Show this help message
+    -l, --local             Build from local source, build Docker, push to local registry
+    -v, --version VERSION  Specific version to install
+
+Examples:
+    $(basename "$0")                      # Install latest from GitHub
+    $(basename "$0") --local               # Build from source + Docker + push to localhost:5000
+
+EOF
+}
+
+if [[ "${1:-}" == "-l" || "${1:-}" == "--local" ]]; then
+    USE_LOCAL=true
+    shift
+else
+    USE_LOCAL=false
+fi
+
+if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
+    usage
+    exit 0
+fi
+
+if [ "$USE_LOCAL" = false ]; then
+    if [ -z "$requested_version" ]; then
+        specific_version=$(curl -s "https://api.github.com/repos/$REPO/releases/latest" | sed -n 's/.*"tag_name": *"v\([^"]*\)".*/\1/p')
+        if [[ $? -ne 0 || -z "$specific_version" ]]; then
+            echo -e "${RED}Failed to fetch version information${NC}"
+            exit 1
+        fi
+    else
+        specific_version=$requested_version
     fi
 else
     specific_version=$requested_version
@@ -143,8 +167,56 @@ check_version() {
     fi
 }
 
+build_from_local() {
+    print_message info "${CYAN}🔨 Building Strix from local source${NC}"
+    print_message info "${MUTED}Project root: ${NC}$PROJECT_ROOT"
+
+    local build_dir="$PROJECT_ROOT/dist"
+    mkdir -p "$build_dir"
+
+    cd "$PROJECT_ROOT"
+
+    if [ -f "pyproject.toml" ] || [ -f "setup.py" ]; then
+        print_message info "${MUTED}Building Python binary with PyInstaller...${NC}"
+        pyinstaller strix.spec --noconfirm --distpath "$build_dir" --workpath "$build_dir/.build"
+    elif [ -f "go.mod" ]; then
+        print_message info "${MUTED}Building Go binary...${NC}"
+        CGO_ENABLED=0 GOOS=$os GOARCH=$arch go build -ldflags="-s -w" -o "$build_dir/strix-$target" cmd/strix/main.go
+    elif [ -f "Cargo.toml" ]; then
+        print_message info "${MUTED}Building Rust binary...${NC}"
+        cargo build --release --locked 2>/dev/null || cargo build --release
+        local binary_path=""
+        if [ -f "target/release/strix" ]; then
+            binary_path="target/release/strix"
+        elif [ -f "target/release/$APP" ]; then
+            binary_path="target/release/$APP"
+        fi
+        if [[ -n "$binary_path" ]]; then
+            cp "$binary_path" "$build_dir/strix-$target"
+        fi
+    elif [ -f "package.json" ]; then
+        print_message info "${MUTED}Building Node.js binary...${NC}"
+        npm run build 2>/dev/null || true
+        if [ -f "dist/index.js" ]; then
+            cp "dist/index.js" "$build_dir/strix-$target"
+        fi
+    else
+        print_message error "${RED}No build system found in project root${NC}"
+        exit 1
+    fi
+
+    if [ -f "$build_dir/strix-$target" ]; then
+        print_message success "${GREEN}✓ Built strix-$target${NC}"
+    elif [ -f "$build_dir/strix" ]; then
+        print_message success "${GREEN}✓ Built strix${NC}"
+    else
+        print_message error "${RED}Build failed${NC}"
+        exit 1
+    fi
+}
+
 download_and_install() {
-    print_message info "\n${CYAN}🦉 Installing Strix${NC} ${MUTED}version: ${NC}$specific_version"
+    print_message info "\n${CYAN}🦅 Installing Strix${NC} ${MUTED}version: ${NC}$specific_version"
     print_message info "${MUTED}Platform: ${NC}$target\n"
 
     local tmp_dir=$(mktemp -d)
@@ -172,6 +244,46 @@ download_and_install() {
     rm -rf "$tmp_dir"
 
     echo -e "${GREEN}✓ Strix installed to $INSTALL_DIR${NC}"
+}
+
+build_and_push_docker() {
+    print_message info "${CYAN}🐳 Building and pushing Docker image${NC}"
+    print_message info "${MUTED}Project root: ${NC}$PROJECT_ROOT"
+
+    cd "$PROJECT_ROOT"
+
+    local dockerfile="containers/Dockerfile"
+    if [ ! -f "$dockerfile" ]; then
+        dockerfile="Dockerfile"
+    fi
+
+    if [ ! -f "$dockerfile" ]; then
+        print_message error "${RED}No Dockerfile found${NC}"
+        exit 1
+    fi
+
+    print_message info "${MUTED}Building image: ${LOCAL_IMAGE}${NC}"
+    docker build \
+        --build-arg BUILDKIT_INLINE_CACHE=1 \
+        -t "$LOCAL_IMAGE" \
+        -f "$dockerfile" \
+        . || { echo -e "${RED}Docker build failed${NC}"; exit 1; }
+
+    print_message success "${GREEN}✓ Built: ${LOCAL_IMAGE}${NC}"
+
+    local registry="localhost:5000"
+    local remote_tag="${registry}/${LOCAL_IMAGE}"
+
+    print_message info "${MUTED}Tagging: ${remote_tag}${NC}"
+    docker tag "$LOCAL_IMAGE" "$remote_tag"
+
+    print_message info "${MUTED}Pushing to ${registry}${NC}"
+    docker push "$remote_tag" || { echo -e "${RED}Push failed${NC}"; exit 1; }
+
+    print_message success "${GREEN}✓ Pushed: ${remote_tag}${NC}"
+    print_message info "${MUTED}To run:${NC}"
+    echo -e "  ${CYAN}docker run -p 8080:8080 ${remote_tag}${NC}"
+    echo -e "  ${CYAN}STRIX_IMAGE=${remote_tag} strix --target https://example.com${NC}"
 }
 
 check_docker() {
@@ -236,14 +348,8 @@ setup_path() {
         bash)
             config_files="$HOME/.bashrc $HOME/.bash_profile $HOME/.profile $XDG_CONFIG_HOME/bash/.bashrc $XDG_CONFIG_HOME/bash/.bash_profile"
             ;;
-        ash)
-            config_files="$HOME/.ashrc $HOME/.profile /etc/profile"
-            ;;
-        sh)
-            config_files="$HOME/.ashrc $HOME/.profile /etc/profile"
-            ;;
         *)
-            config_files="$HOME/.bashrc $HOME/.bash_profile $XDG_CONFIG_HOME/bash/.bashrc $XDG_CONFIG_HOME/bash/.bash_profile"
+            config_files="$HOME/.bashrc $HOME/.bash_profile"
             ;;
     esac
 
@@ -259,28 +365,7 @@ setup_path() {
         print_message warning "No config file found for $current_shell. You may need to manually add to PATH:"
         print_message info "  export PATH=$INSTALL_DIR:\$PATH"
     elif [[ ":$PATH:" != *":$INSTALL_DIR:"* ]]; then
-        case $current_shell in
-            fish)
-                add_to_path "$config_file" "fish_add_path $INSTALL_DIR"
-                ;;
-            zsh)
-                add_to_path "$config_file" "export PATH=$INSTALL_DIR:\$PATH"
-                ;;
-            bash)
-                add_to_path "$config_file" "export PATH=$INSTALL_DIR:\$PATH"
-                ;;
-            ash)
-                add_to_path "$config_file" "export PATH=$INSTALL_DIR:\$PATH"
-                ;;
-            sh)
-                add_to_path "$config_file" "export PATH=$INSTALL_DIR:\$PATH"
-                ;;
-            *)
-                export PATH=$INSTALL_DIR:$PATH
-                print_message warning "Manually add the directory to $config_file (or similar):"
-                print_message info "  export PATH=$INSTALL_DIR:\$PATH"
-                ;;
-        esac
+        add_to_path "$config_file" "export PATH=$INSTALL_DIR:\$PATH"
     fi
 
     if [ -n "${GITHUB_ACTIONS-}" ] && [ "${GITHUB_ACTIONS}" == "true" ]; then
@@ -297,13 +382,8 @@ verify_installation() {
     if [[ "$which_strix" != "$INSTALL_DIR/strix" && "$which_strix" != "$INSTALL_DIR/strix.exe" ]]; then
         if [[ -n "$which_strix" ]]; then
             echo -e "${YELLOW}⚠ Found conflicting strix at: ${NC}$which_strix"
-            echo -e "${MUTED}Attempting to remove...${NC}"
-
             if rm -f "$which_strix" 2>/dev/null; then
                 echo -e "${GREEN}✓ Removed conflicting installation${NC}"
-            else
-                echo -e "${YELLOW}Could not remove automatically.${NC}"
-                echo -e "${MUTED}Please remove manually: ${NC}rm $which_strix"
             fi
         fi
     fi
@@ -314,13 +394,28 @@ verify_installation() {
     fi
 }
 
-check_version
-if [ "$SKIP_DOWNLOAD" = false ]; then
-    download_and_install
+if [ "$USE_LOCAL" = true ]; then
+    build_from_local
+
+    local build_dir="$PROJECT_ROOT/dist"
+    if [ "$os" = "windows" ]; then
+        cp "$build_dir/strix-$target.exe" "$INSTALL_DIR/strix.exe" 2>/dev/null || cp "$build_dir/strix.exe" "$INSTALL_DIR/strix.exe"
+    else
+        cp "$build_dir/strix-$target" "$INSTALL_DIR/strix" 2>/dev/null || cp "$build_dir/strix" "$INSTALL_DIR/strix"
+        chmod 755 "$INSTALL_DIR/strix"
+    fi
+    print_message success "${GREEN}✓ Strix installed from local build${NC}"
+
+    build_and_push_docker
+else
+    check_version
+    if [ "$SKIP_DOWNLOAD" = false ]; then
+        download_and_install
+    fi
+    setup_path
+    verify_installation
+    check_docker
 fi
-setup_path
-verify_installation
-check_docker
 
 echo ""
 echo -e "${CYAN}"
@@ -341,10 +436,6 @@ echo -e "     ${MUTED}export STRIX_LLM='openai/gpt-5.4'${NC}"
 echo ""
 echo -e "  ${CYAN}2.${NC} Run a penetration test:"
 echo -e "     ${MUTED}strix --target https://example.com${NC}"
-echo ""
-echo -e "${MUTED}For more information visit ${NC}https://strix.ai"
-echo -e "${MUTED}Supported models ${NC}https://docs.strix.ai/llm-providers/overview"
-echo -e "${MUTED}Join our community ${NC}https://discord.gg/strix-ai"
 echo ""
 
 echo -e "${YELLOW}→${NC} Run ${MUTED}source ~/.$(basename $SHELL)rc${NC} or open a new terminal"

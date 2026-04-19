@@ -1,9 +1,25 @@
+# Pathbuster Stage
+FROM rustlang/rust:nightly AS builder
+
+WORKDIR /app
+
+RUN apt-get update && \
+ apt-get install -y git && \
+ apt-get update && \
+ apt-get upgrade -y
+
+RUN git clone https://github.com/ethicalhackingplayground/pathbuster
+
+RUN cd pathbuster && cargo build --release
+
+####################################################
+
 FROM kalilinux/kali-rolling:latest
 
 LABEL description="AI Agent Penetration Testing Environment with Comprehensive Automated Tools"
 
 RUN apt-get update && \
-    apt-get install -y kali-archive-keyring sudo && \
+    apt-get install -y libssl3 kali-archive-keyring sudo && \
     apt-get update && \
     apt-get upgrade -y
 
@@ -21,6 +37,10 @@ RUN mkdir -p /home/pentester/configs \
              /app/tools \
              /app/certs && \
     chown -R pentester:pentester /app/certs /home/pentester/tools
+
+COPY --from=builder /app/pathbuster/target/release/pathbuster /home/pentester/tools/pathbuster
+COPY --from=builder /app/pathbuster/payloads /home/pentester/wordlists/traversals.txt
+COPY --from=builder /app/pathbuster/config.yml /opt/pathbuster/config.yml
 
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
@@ -44,6 +64,7 @@ RUN apt-get update && \
     libxcomposite1 libxdamage1 libxfixes3 libxrandr2 libgbm1 libxkbcommon0 libpango-1.0-0 libcairo2 libasound2t64 \
     fonts-unifont fonts-noto-color-emoji fonts-freefont-ttf fonts-dejavu-core ttf-bitstream-vera \
     libnss3-tools
+
 
 
 RUN setcap cap_net_raw,cap_net_admin,cap_net_bind_service+eip $(which nmap)
