@@ -71,27 +71,40 @@ Usage: $(basename "$0") [OPTIONS]
 
 Options:
     -h, --help              Show this help message
-    -l, --local             Build from local source, build Docker, push to local registry
+    -l, --local             Build from local source, install, build Docker, push to registry
+    -p, --push             Just build Docker image and push to local registry (skip CLI build)
     -v, --version VERSION  Specific version to install
 
 Examples:
     $(basename "$0")                      # Install latest from GitHub
-    $(basename "$0") --local               # Build from source + Docker + push to localhost:5000
+    $(basename "$0") --local               # Build CLI from source + Docker + push
+    $(basename "$0") --push                # Just build Docker and push (skip CLI build)
 
 EOF
 }
 
-if [[ "${1:-}" == "-l" || "${1:-}" == "--local" ]]; then
-    USE_LOCAL=true
-    shift
-else
-    USE_LOCAL=false
-fi
+USE_LOCAL=false
+PUSH_ONLY=false
 
-if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
-    usage
-    exit 0
-fi
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        -l|--local)
+            USE_LOCAL=true
+            shift
+            ;;
+        -p|--push)
+            PUSH_ONLY=true
+            shift
+            ;;
+        -h|--help)
+            usage
+            exit 0
+            ;;
+        *)
+            shift
+            ;;
+    esac
+done
 
 if [ "$USE_LOCAL" = false ]; then
     if [ -z "$requested_version" ]; then
@@ -253,9 +266,39 @@ download_and_install() {
     echo -e "${GREEN}✓ Strix installed to $INSTALL_DIR${NC}"
 }
 
+start_local_registry() {
+    print_message info "${CYAN}🚀 Starting local Docker registry${NC}"
+
+    local registry_name="strix-registry"
+    local registry_port="5000"
+
+    if docker ps -a --format '{{.Names}}' | grep -q "^${registry_name}$"; then
+        if docker ps --format '{{.Names}}' | grep -q "^${registry_name}$"; then
+            print_message info "${MUTED}Registry already running${NC}"
+            return 0
+        else
+            print_message info "${MUTED}Starting existing registry...${NC}"
+            docker start "$registry_name"
+            return 0
+        fi
+    fi
+
+    print_message info "${MUTED}Starting registry on port ${registry_port}${NC}"
+    docker run -d \
+        --name "$registry_name" \
+        --restart=always \
+        -p $registry_port:5000 \
+        -v registry-data:/var/lib/registry \
+        registry:2
+
+    print_message success "${GREEN}✓ Local registry running on localhost:5000${NC}"
+}
+
 build_and_push_docker() {
     print_message info "${CYAN}🐳 Building and pushing Docker image${NC}"
     print_message info "${MUTED}Project root: ${NC}$PROJECT_ROOT"
+
+    start_local_registry
 
     cd "$PROJECT_ROOT"
 
@@ -401,7 +444,9 @@ verify_installation() {
     fi
 }
 
-if [ "$USE_LOCAL" = true ]; then
+if [ "$PUSH_ONLY" = true ]; then
+    build_and_push_docker
+elif [ "$USE_LOCAL" = true ]; then
     build_from_local
 
     BUILD_DIR="$PROJECT_ROOT/dist"
